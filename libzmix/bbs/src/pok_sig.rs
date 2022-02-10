@@ -147,6 +147,8 @@ impl PoKOfSignature {
                 ProofMessage::Revealed(r) => temp.push(*r),
                 ProofMessage::Hidden(HiddenMessage::ProofSpecificBlinding(m)) => temp.push(*m),
                 ProofMessage::Hidden(HiddenMessage::ExternalBlinding(m, _)) => temp.push(*m),
+                ProofMessage::Committed(HiddenMessage::ProofSpecificBlinding(m)) => temp.push(*m),
+                ProofMessage::Committed(HiddenMessage::ExternalBlinding(m, _)) => temp.push(*m),
             }
         }
 
@@ -222,6 +224,14 @@ impl PoKOfSignature {
                     secrets_2.push(m.0);
                 }
                 ProofMessage::Hidden(HiddenMessage::ExternalBlinding(e, b)) => {
+                    committing_2.commit_with(&vk.h[i], b);
+                    secrets_2.push(e.0);
+                }
+                ProofMessage::Committed(HiddenMessage::ProofSpecificBlinding(m)) => {
+                    committing_2.commit(&vk.h[i]);
+                    secrets_2.push(m.0);
+                }
+                ProofMessage::Committed(HiddenMessage::ExternalBlinding(e, b)) => {
                     committing_2.commit_with(&vk.h[i], b);
                     secrets_2.push(e.0);
                 }

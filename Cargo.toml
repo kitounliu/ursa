@@ -27,7 +27,8 @@ members = [
     "ursa_encryption",
     "ursa_sharing",
     "ursa_shortgroupsignatures",
-    "ursa_signatures"
+    "ursa_signatures",
+    "libzmix"
 ]
 
 exclude = [

@@ -57,6 +57,35 @@ macro_rules! pm_hidden_raw {
     };
 }
 
+/// Creates a proof message that is hidden based on the number of parameters
+/// One means hidden and only used in this proof
+/// Two means hidden but can be used in other proofs
+#[macro_export]
+macro_rules! pm_committed {
+    ($data:expr) => {
+        ProofMessage::Committed(HiddenMessage::ProofSpecificBlinding(
+            SignatureMessage::hash($data),
+        ))
+    };
+    ($data:expr, $bf:expr) => {
+        ProofMessage::Committed(HiddenMessage::ExternalBlinding(
+            SignatureMessage::hash($data),
+            $bf,
+        ))
+    };
+}
+
+/// Wrap a raw message in its respective hidden
+#[macro_export]
+macro_rules! pm_committed_raw {
+    ($data:expr) => {
+        ProofMessage::Committed(HiddenMessage::ProofSpecificBlinding($data))
+    };
+    ($data:expr, $bf:expr) => {
+        ProofMessage::Committed(HiddenMessage::ExternalBlinding($data, $bf))
+    };
+}
+
 use crate::{ProofNonce, SignatureMessage};
 
 /// A message classification by the prover
@@ -65,6 +94,8 @@ pub enum ProofMessage {
     Revealed(SignatureMessage),
     /// Message will be hidden from a verifier
     Hidden(HiddenMessage),
+    /// Message will be hidden and independently committed for external use
+    Committed(HiddenMessage),
 }
 
 impl ProofMessage {
@@ -74,6 +105,8 @@ impl ProofMessage {
             ProofMessage::Revealed(ref r) => *r,
             ProofMessage::Hidden(HiddenMessage::ProofSpecificBlinding(ref p)) => *p,
             ProofMessage::Hidden(HiddenMessage::ExternalBlinding(ref m, _)) => *m,
+            ProofMessage::Committed(HiddenMessage::ProofSpecificBlinding(ref p)) => *p,
+            ProofMessage::Committed(HiddenMessage::ExternalBlinding(ref m, _)) => *m,
         }
     }
 }

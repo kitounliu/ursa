@@ -34,5 +34,6 @@ serde-wasm-bindgen = { version = "0.1", optional = true }
 subtle = "2.2"
 wasm-bindgen = { version = "0.2", optional = true }
 zeroize = "1.1"
+amcl_wrapper = { version = "0.3.5" }
 
 [dev-dependencies]

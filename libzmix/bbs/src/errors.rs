@@ -1,5 +1,6 @@
 use crate::pok_sig::PoKOfSignatureProofStatus;
 use crate::pok_vc::PoKVCError;
+use crate::prelude::PoKOfCommitsProofStatus;
 use failure::{Backtrace, Context, Fail};
 #[cfg(feature = "wasm")]
 use wasm_bindgen::prelude::*;
@@ -50,6 +51,12 @@ pub enum BBSErrorKind {
     InvalidProof {
         /// The status of the invalid proof
         status: PoKOfSignatureProofStatus,
+    },
+    /// Failed signature poof of knowledge
+    #[fail(display = "The proof failed due to {}", status)]
+    InvalidProofCommits {
+        /// The status of the invalid proof
+        status: PoKOfCommitsProofStatus,
     },
     /// A Generic error
     #[fail(display = "{:?}", msg)]

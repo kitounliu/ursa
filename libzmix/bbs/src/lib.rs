@@ -53,6 +53,7 @@ use rand::prelude::*;
 use rayon::prelude::*;
 use std::fmt::{Display, Formatter};
 
+use crate::prelude::PoKOfCommitsProof;
 use serde::{
     de::{Error as DError, Visitor},
     Deserialize, Deserializer, Serialize, Serializer,
@@ -84,6 +85,8 @@ pub mod messages;
 /// Macros and classes used for creating proofs of knowledge
 #[macro_use]
 pub mod pok_vc;
+/// Convert group elements between pairing-plus and amcl
+pub mod conversion;
 /// The errors that BBS+ throws
 pub mod errors;
 /// Represents steps taken by the issuer to create a BBS+ signature
@@ -91,6 +94,8 @@ pub mod errors;
 pub mod issuer;
 /// BBS+ key classes
 pub mod keys;
+/// Methods and structs for creating commitments for messages
+pub mod pok_commit;
 /// Methods and structs for creating signature proofs of knowledge
 pub mod pok_sig;
 /// Represents steps taken by the prover to receive a BBS+ signature
@@ -524,11 +529,14 @@ pub struct ProofRequest {
     /// Allow the prover to retrieve which messages should be revealed.
     /// Might be prompted in a GUI or CLI
     pub revealed_messages: BTreeSet<usize>,
+    /// Allow the prover to retrieve which messages should be committed independently
+    pub committed_messages: BTreeSet<usize>,
     /// Allow the prover to know which public key for which the signature must
     /// be valid.
     pub verification_key: PublicKey,
 }
 
+// todo: update
 impl ProofRequest {
     pub(crate) fn to_bytes(&self, compressed: bool) -> Vec<u8> {
         let revealed: Vec<usize> = (&self.revealed_messages).iter().copied().collect();
@@ -537,6 +545,14 @@ impl ProofRequest {
         let mut key = self.verification_key.to_bytes(compressed);
         let mut output = (temp.len() as u32).to_be_bytes().to_vec();
         output.append(&mut temp);
+
+        let committed: Vec<usize> = self.committed_messages.iter().copied().collect();
+        let mut tmp =
+            revealed_to_bitvector(self.verification_key.message_count(), committed.as_slice());
+        let tmp_len = tmp.len() as u32;
+        output.extend_from_slice(&tmp_len.to_be_bytes());
+        output.append(&mut tmp);
+
         output.append(&mut key);
         output
     }
@@ -552,11 +568,19 @@ impl ProofRequest {
             return Err(BBSErrorKind::InvalidNumberOfBytes(min_len, data.len()).into());
         }
         let bitvector_len = u32::from_be_bytes(*array_ref![data, 0, 4]) as usize;
-        let offset = 4 + bitvector_len;
+        let mut offset = 4 + bitvector_len;
         let revealed_messages = bitvector_to_revealed(&data[4..offset]);
+
+        let committed_len = u32::from_be_bytes(*array_ref![data, offset, 4]) as usize;
+        offset += 4;
+        let end = offset + committed_len;
+        let committed_messages = bitvector_to_revealed(&data[offset..end]);
+        offset = end;
+
         let verification_key = PublicKey::from_bytes(&data[offset..], g1_size, compressed)?;
         Ok(Self {
             revealed_messages,
+            committed_messages,
             verification_key,
         })
     }
@@ -566,6 +590,7 @@ impl Default for ProofRequest {
     fn default() -> Self {
         Self {
             revealed_messages: BTreeSet::new(),
+            committed_messages: BTreeSet::new(),
             verification_key: PublicKey::default(),
         }
     }
@@ -604,21 +629,24 @@ impl ToVariableLengthBytes for ProofRequest {
 
 /// Contains the data from a prover to a verifier
 #[derive(Debug, Clone)]
-pub struct SignatureProof {
+pub struct SignatureCommitsProof {
     /// The revealed messages as field elements
     pub revealed_messages: BTreeMap<usize, SignatureMessage>,
     /// The signature proof of knowledge
     pub proof: PoKOfSignatureProof,
+    /// The indices of the committed messages
+    pub committed_messages: BTreeSet<usize>,
+    /// The proof of knowledge of the commitments
+    pub commits_proof: Option<PoKOfCommitsProof>,
 }
 
-impl SignatureProof {
+impl SignatureCommitsProof {
     /// Convert to raw bytes
     pub(crate) fn to_bytes(&self, compressed: bool) -> Vec<u8> {
         let proof_bytes = self.proof.to_bytes(compressed);
         let proof_len = proof_bytes.len() as u32;
 
-        let mut output =
-            Vec::with_capacity(proof_len as usize + 4 * (self.revealed_messages.len() + 1));
+        let mut output = Vec::new();
         output.extend_from_slice(&proof_len.to_be_bytes()[..]);
         output.extend_from_slice(proof_bytes.as_slice());
 
@@ -628,6 +656,22 @@ impl SignatureProof {
             let ii = *i as u32;
             output.extend_from_slice(&ii.to_be_bytes()[..]);
             m.0.serialize(&mut output, compressed).unwrap();
+        }
+
+        if let Some(commits_proof) = &self.commits_proof {
+            let commits_proof_bytes = commits_proof.to_bytes(compressed);
+            let commits_proof_len = commits_proof_bytes.len() as u32;
+            output.extend_from_slice(&commits_proof_len.to_be_bytes()[..]);
+            output.extend_from_slice(commits_proof_bytes.as_slice());
+        } else {
+            output.extend_from_slice(&0u32.to_be_bytes())
+        }
+
+        let committed_messages_len = self.committed_messages.len() as u32;
+        output.extend_from_slice(&committed_messages_len.to_be_bytes()[..]);
+        for c in self.committed_messages.iter() {
+            let i = *c as u32;
+            output.extend_from_slice(&i.to_be_bytes()[..]);
         }
 
         output
@@ -669,15 +713,40 @@ impl SignatureProof {
             revealed_messages.insert(i, m);
         }
 
+        let commits_proof_len = u32::from_be_bytes(*array_ref![data, offset, 4]) as usize;
+        offset += 4;
+        end = offset + commits_proof_len;
+        let mut commits_proof = None;
+        if commits_proof_len != 0 {
+            commits_proof = Some(PoKOfCommitsProof::from_bytes(
+                &data[offset..end],
+                g1_size,
+                compressed,
+            )?);
+        }
+
+        offset = end;
+        let committed_messages_len = u32::from_be_bytes(*array_ref![data, offset, 4]) as usize;
+
+        offset += 4;
+        let mut committed_messages = BTreeSet::new();
+        for _ in 0..committed_messages_len {
+            let i = u32::from_be_bytes(*array_ref![data, offset, 4]) as usize;
+            committed_messages.insert(i);
+            offset = offset + 4;
+        }
+
         Ok(Self {
             revealed_messages,
             proof,
+            committed_messages,
+            commits_proof,
         })
     }
 }
 
-impl ToVariableLengthBytes for SignatureProof {
-    type Output = SignatureProof;
+impl ToVariableLengthBytes for SignatureCommitsProof {
+    type Output = SignatureCommitsProof;
     type Error = BBSError;
 
     /// Convert to raw bytes using compressed form for each element.
@@ -699,19 +768,21 @@ impl ToVariableLengthBytes for SignatureProof {
     }
 }
 
-impl Default for SignatureProof {
+impl Default for SignatureCommitsProof {
     fn default() -> Self {
         Self {
             revealed_messages: BTreeMap::new(),
             proof: PoKOfSignatureProof::default(),
+            committed_messages: BTreeSet::default(),
+            commits_proof: None,
         }
     }
 }
 
-try_from_impl!(SignatureProof, BBSError);
-serdes_impl!(SignatureProof);
+try_from_impl!(SignatureCommitsProof, BBSError);
+serdes_impl!(SignatureCommitsProof);
 #[cfg(feature = "wasm")]
-wasm_slice_impl!(SignatureProof);
+wasm_slice_impl!(SignatureCommitsProof);
 
 /// Expects `revealed` to be sorted
 fn revealed_to_bitvector(total: usize, revealed: &[usize]) -> Vec<u8> {
@@ -764,12 +835,13 @@ fn rand_non_zero_fr() -> Fr {
 /// Convenience importer
 pub mod prelude {
     pub use super::{
-        errors::prelude::*, issuer::Issuer, keys::prelude::*, messages::*, pok_sig::prelude::*,
-        pok_vc::prelude::*, prover::Prover, signature::prelude::*, verifier::Verifier,
-        BlindSignatureContext, Commitment, CommitmentBuilder, GeneratorG1, GeneratorG2, HashElem,
-        ProofChallenge, ProofNonce, ProofRequest, RandomElem, SignatureBlinding, SignatureMessage,
-        SignatureProof, ToVariableLengthBytes, FR_COMPRESSED_SIZE, G1_COMPRESSED_SIZE,
-        G1_UNCOMPRESSED_SIZE, G2_COMPRESSED_SIZE, G2_UNCOMPRESSED_SIZE,
+        conversion::*, errors::prelude::*, issuer::Issuer, keys::prelude::*, messages::*,
+        pok_commit::prelude::*, pok_sig::prelude::*, pok_vc::prelude::*, prover::Prover,
+        signature::prelude::*, verifier::Verifier, BlindSignatureContext, Commitment,
+        CommitmentBuilder, GeneratorG1, GeneratorG2, HashElem, ProofChallenge, ProofNonce,
+        ProofRequest, RandomElem, SignatureBlinding, SignatureCommitsProof, SignatureMessage,
+        ToVariableLengthBytes, FR_COMPRESSED_SIZE, G1_COMPRESSED_SIZE, G1_UNCOMPRESSED_SIZE,
+        G2_COMPRESSED_SIZE, G2_UNCOMPRESSED_SIZE,
     };
 }
 
@@ -820,7 +892,7 @@ mod tests {
     #[test]
     fn proof_request_bytes_test() {
         let (pk, _) = generate(5).unwrap();
-        let pr = Verifier::new_proof_request(&[2, 3, 4], &pk).unwrap();
+        let pr = Verifier::new_proof_request(&[2, 3, 4], &[], &pk).unwrap();
 
         let bytes = pr.to_bytes_compressed_form();
         let pr_1 = ProofRequest::from_bytes_compressed_form(&bytes);
@@ -868,7 +940,7 @@ mod tests {
     #[test]
     fn proof_bytes_test() {
         // No revealed messages
-        let proof = SignatureProof {
+        let proof = SignatureCommitsProof {
             revealed_messages: BTreeMap::new(),
             proof: PoKOfSignatureProof {
                 a_prime: G1::zero(),
@@ -883,18 +955,20 @@ mod tests {
                     responses: Vec::with_capacity(1),
                 },
             },
+            committed_messages: Default::default(),
+            commits_proof: None,
         };
 
         let proof_bytes = proof.to_bytes_uncompressed_form();
 
-        let proof_dup = SignatureProof::from_bytes_uncompressed_form(&proof_bytes);
+        let proof_dup = SignatureCommitsProof::from_bytes_uncompressed_form(&proof_bytes);
         assert!(proof_dup.is_ok());
 
         let (pk, sk) = Issuer::new_keys(1).unwrap();
         let messages = vec![SignatureMessage::random()];
         let sig = Signature::new(messages.as_slice(), &sk, &pk).unwrap();
 
-        let pr = Verifier::new_proof_request(&[0], &pk).unwrap();
+        let pr = Verifier::new_proof_request(&[0], &[], &pk).unwrap();
         let pm = vec![pm_revealed_raw!(messages[0].clone())];
         let pok = Prover::commit_signature_pok(&pr, pm.as_slice(), &sig).unwrap();
         let nonce = ProofNonce::hash(&[0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8]);
@@ -912,7 +986,7 @@ mod tests {
         );
         let sig_proof_bytes = sig_proof.to_bytes_uncompressed_form();
 
-        let sig_proof_dup = SignatureProof::from_bytes_uncompressed_form(&sig_proof_bytes);
+        let sig_proof_dup = SignatureCommitsProof::from_bytes_uncompressed_form(&sig_proof_bytes);
         assert!(sig_proof_dup.is_ok());
         let sig_proof_dup = sig_proof_dup.unwrap();
         assert!(
@@ -924,7 +998,7 @@ mod tests {
 
         let sig_proof_bytes = sig_proof.to_bytes_compressed_form();
 
-        let sig_proof_dup = SignatureProof::from_bytes_compressed_form(&sig_proof_bytes);
+        let sig_proof_dup = SignatureCommitsProof::from_bytes_compressed_form(&sig_proof_bytes);
         assert!(sig_proof_dup.is_ok());
     }
 }

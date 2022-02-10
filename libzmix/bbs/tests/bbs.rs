@@ -4,6 +4,8 @@ extern crate bbs;
 use bbs::prelude::*;
 use std::collections::BTreeMap;
 
+use pairing_plus::serdes::SerDes;
+
 #[test]
 fn keygen() {
     let res = Issuer::new_keys(5);
@@ -130,6 +132,174 @@ fn blind_sign_simple() {
 }
 
 #[test]
+fn test_conversion() {
+    use bbs::{prelude::*, FR_UNCOMPRESSED_SIZE};
+    use blake2::digest::generic_array::GenericArray;
+    use ff_zeroize::PrimeField;
+    use pairing_plus::{
+        bls12_381::{Fr, G1},
+        hash_to_field::BaseFromRO,
+        CurveProjective,
+    };
+    use std::convert::TryFrom;
+    use std::io::Cursor;
+
+    let ghash: Vec<u8> = vec![
+        9, 244, 226, 211, 240, 138, 206, 72, 201, 12, 2, 194, 102, 36, 104, 46, 152, 186, 54, 130,
+        75, 42, 226, 196, 249, 220, 252, 251, 43, 253, 68, 51, 254, 240, 245, 74, 92, 88, 131, 54,
+        115, 22, 68, 245, 53, 52, 251, 32, 15, 150, 145, 173, 222, 69, 1, 77, 131, 108, 129, 0,
+        253, 232, 211, 190, 211, 244, 225, 230, 31, 226, 252, 125, 112, 28, 86, 204, 138, 57, 84,
+        15, 172, 55, 225, 129, 57, 10, 162, 163, 8, 51, 193, 22, 17, 234, 164, 169,
+    ];
+    let mut g = GeneratorG1::try_from(&ghash[..]).unwrap();
+    println!("static g = {:?}", g);
+    let gb = g.to_bytes_uncompressed_form();
+    println!("bytes of g = {:?}", gb);
+    assert_eq!(ghash, gb);
+
+    let hhash: Vec<u8> = vec![
+        9, 55, 153, 174, 136, 245, 47, 156, 167, 167, 232, 41, 182, 145, 90, 87, 83, 186, 229, 58,
+        182, 180, 75, 121, 73, 114, 4, 157, 208, 223, 212, 136, 121, 66, 71, 175, 118, 5, 46, 122,
+        197, 35, 204, 63, 207, 225, 39, 44, 25, 144, 147, 56, 57, 204, 8, 78, 39, 94, 220, 40, 123,
+        233, 91, 89, 87, 11, 143, 241, 162, 164, 16, 136, 94, 29, 18, 58, 124, 77, 175, 97, 107,
+        199, 161, 165, 196, 90, 94, 204, 224, 26, 72, 137, 3, 147, 161, 5,
+    ];
+    let h = GeneratorG1::try_from(&hhash[..]).unwrap();
+    println!("static h = {:?}", h);
+    let hb = h.to_bytes_uncompressed_form();
+    println!("bytes of h = {:?}", hb);
+    assert_eq!(hhash, hb);
+
+    let mut c = Cursor::new(ghash);
+    let mut gg = G1::deserialize(&mut c, false).unwrap();
+    let age: Fr = Fr::from_str("25").unwrap();
+
+    let mut out = Vec::new();
+    age.serialize(&mut out, false).unwrap();
+    println!("\nbytes of age = {:?}, length = {}", out, out.len());
+
+    let mut okm = [0u8; FR_UNCOMPRESSED_SIZE];
+    let r = Fr::from_okm(GenericArray::from_slice(&okm[..]));
+    let mut out = Vec::new();
+    r.serialize(&mut out, false).unwrap();
+    println!("\nbytes of random = {:?}, length = {}", out, out.len());
+
+    let (pk, sk) = generate(1).unwrap();
+    let skb = sk.to_bytes_uncompressed_form();
+    println!("\nsecret key = {:?}, length = {}", skb, skb.len());
+
+    gg.mul_assign(age);
+
+    let mut out = Vec::new();
+    gg.serialize(&mut out, false).unwrap();
+
+    println!("\ng^age = {:?}", gg);
+    println!("\nbytes of g^age = {:?}", out);
+}
+
+#[test]
+fn pok_sig_range() {
+    use ff_zeroize::PrimeField;
+    use pairing_plus::{bls12_381::Fr, CurveProjective};
+
+    use std::convert::TryFrom;
+
+    let (pk, sk) = Issuer::new_keys(2).unwrap();
+    let age: Fr = Fr::from_str("25").unwrap();
+    let age_mess = SignatureMessage::from(age.clone());
+
+    let messages = vec![SignatureMessage::hash(b"alice"), age_mess];
+    let signature = Signature::new(messages.as_slice(), &sk, &pk).unwrap();
+
+    let nonce = Verifier::generate_proof_nonce();
+    let proof_request = Verifier::new_proof_request(&[], &[], &pk).unwrap();
+
+    let ghash: Vec<u8> = vec![
+        9, 244, 226, 211, 240, 138, 206, 72, 201, 12, 2, 194, 102, 36, 104, 46, 152, 186, 54, 130,
+        75, 42, 226, 196, 249, 220, 252, 251, 43, 253, 68, 51, 254, 240, 245, 74, 92, 88, 131, 54,
+        115, 22, 68, 245, 53, 52, 251, 32, 15, 150, 145, 173, 222, 69, 1, 77, 131, 108, 129, 0,
+        253, 232, 211, 190, 211, 244, 225, 230, 31, 226, 252, 125, 112, 28, 86, 204, 138, 57, 84,
+        15, 172, 55, 225, 129, 57, 10, 162, 163, 8, 51, 193, 22, 17, 234, 164, 169,
+    ];
+    let mut g = GeneratorG1::try_from(&ghash[..]).unwrap();
+
+    let hhash: Vec<u8> = vec![
+        9, 55, 153, 174, 136, 245, 47, 156, 167, 167, 232, 41, 182, 145, 90, 87, 83, 186, 229, 58,
+        182, 180, 75, 121, 73, 114, 4, 157, 208, 223, 212, 136, 121, 66, 71, 175, 118, 5, 46, 122,
+        197, 35, 204, 63, 207, 225, 39, 44, 25, 144, 147, 56, 57, 204, 8, 78, 39, 94, 220, 40, 123,
+        233, 91, 89, 87, 11, 143, 241, 162, 164, 16, 136, 94, 29, 18, 58, 124, 77, 175, 97, 107,
+        199, 161, 165, 196, 90, 94, 204, 224, 26, 72, 137, 3, 147, 161, 5,
+    ];
+    let h = GeneratorG1::try_from(&hhash[..]).unwrap();
+
+    let mut age_binding = Verifier::generate_proof_nonce();
+
+    //todo: generate g^25 h^r
+    let mut bullet = g.as_ref().clone();
+    bullet.mul_assign(age);
+    let mut tmp = h.as_ref().clone();
+    tmp.mul_assign(age_binding.as_ref().clone());
+    bullet.add_assign(&tmp);
+
+    // generate g^{\rho_25} h^{\rho_r}
+    let rho_age = Verifier::generate_proof_nonce();
+    let mut bullet_commit = ProverCommittingG1::new();
+    bullet_commit.commit_with(&g, &rho_age);
+    bullet_commit.commit(&h);
+    bullet_commit.finish();
+
+    // Sends `proof_request` and `nonce` to the prover
+    let proof_messages = vec![pm_hidden!(b"alice"), pm_hidden_raw!(age_mess, rho_age)];
+
+    let pok = Prover::commit_signature_pok(&proof_request, proof_messages.as_slice(), &signature)
+        .unwrap();
+
+    // complete other zkps as desired and compute `challenge_hash`
+    let challenge = Prover::create_challenge_hash(&[pok.clone()], None, None, &nonce).unwrap();
+
+    let proof = Prover::generate_signature_pok(pok, &challenge).unwrap();
+
+    // Send `proof` and `challenge` to Verifier
+    Verifier::verify_signature_pok(&proof_request, &proof, &nonce).unwrap();
+
+    /*
+        let val = Fr::from_str("25").unwrap();
+        let mut g = G1::one();
+
+        println!("\ngenerator = {:?}", g);
+        let mut out = Vec::new();
+        g.serialize(&mut out, false).unwrap();
+        println!("\nout = {:?}", out);
+
+        g.mul_assign(val);
+
+        println!("\ng = {:?}", g);
+
+        let mut out = Vec::new();
+        g.serialize(&mut out, false).unwrap();
+        println!("\nout = {:?}", out);
+
+        let mut c = Cursor::new(out);
+        let gout =  G1::deserialize(&mut c, false).unwrap();
+        println!("\ngout = {:?}", gout);
+
+        let ga = g.into_affine();
+        println!("\nga = {:?}", ga);
+        let gouta = gout.into_affine();
+        println!("\ngouta = {:?}", gouta);
+
+        let gh1 = GeneratorG1::hash("g".as_bytes());
+        println!("\n hash(g) = {:?}", gh1);
+        let gh1b = gh1.to_bytes_uncompressed_form();
+        println!("\n bytes of hash(g) = {:?}", gh1b);
+
+
+        let gh1bc = gh1.to_bytes_compressed_form();
+        println!("\n bytes of compressed hash(g) = {:?}", gh1bc);
+    */
+}
+
+#[test]
 fn pok_sig() {
     let (pk, sk) = Issuer::new_keys(5).unwrap();
     let messages = vec![
@@ -143,7 +313,7 @@ fn pok_sig() {
     let signature = Signature::new(messages.as_slice(), &sk, &pk).unwrap();
 
     let nonce = Verifier::generate_proof_nonce();
-    let proof_request = Verifier::new_proof_request(&[1, 3], &pk).unwrap();
+    let proof_request = Verifier::new_proof_request(&[1, 3], &[], &pk).unwrap();
 
     // Sends `proof_request` and `nonce` to the prover
     let proof_messages = vec![
@@ -158,7 +328,7 @@ fn pok_sig() {
         .unwrap();
 
     // complete other zkps as desired and compute `challenge_hash`
-    let challenge = Prover::create_challenge_hash(&[pok.clone()], None, &nonce).unwrap();
+    let challenge = Prover::create_challenge_hash(&[pok.clone()], None, None, &nonce).unwrap();
 
     let proof = Prover::generate_signature_pok(pok, &challenge).unwrap();
 
@@ -184,7 +354,7 @@ fn pok_sig_extra_message() {
     let signature = Signature::new(messages.as_slice(), &sk, &pk).unwrap();
 
     let nonce = Verifier::generate_proof_nonce();
-    let mut proof_request = Verifier::new_proof_request(&[1, 3], &pk).unwrap();
+    let mut proof_request = Verifier::new_proof_request(&[1, 3], &[], &pk).unwrap();
 
     // Sends `proof_request` and `nonce` to the prover
     let proof_messages = vec![
@@ -199,7 +369,7 @@ fn pok_sig_extra_message() {
         .unwrap();
 
     // complete other zkps as desired and compute `challenge_hash`
-    let challenge = Prover::create_challenge_hash(&[pok.clone()], None, &nonce).unwrap();
+    let challenge = Prover::create_challenge_hash(&[pok.clone()], None, None, &nonce).unwrap();
 
     let mut proof = Prover::generate_signature_pok(pok, &challenge).unwrap();
 
@@ -247,7 +417,7 @@ fn pok_sig_bad_message() {
     let signature = Signature::new(messages.as_slice(), &sk, &pk).unwrap();
 
     let nonce = Verifier::generate_proof_nonce();
-    let mut proof_request = Verifier::new_proof_request(&[1, 3], &pk).unwrap();
+    let mut proof_request = Verifier::new_proof_request(&[1, 3], &[], &pk).unwrap();
 
     // Sends `proof_request` and `nonce` to the prover
     let mut proof_messages = vec![
@@ -264,7 +434,7 @@ fn pok_sig_bad_message() {
     let pok = Prover::commit_signature_pok(&proof_request, proof_messages.as_slice(), &signature)
         .unwrap();
 
-    let challenge = Prover::create_challenge_hash(&[pok.clone()], None, &nonce).unwrap();
+    let challenge = Prover::create_challenge_hash(&[pok.clone()], None, None, &nonce).unwrap();
 
     let proof = Prover::generate_signature_pok(pok, &challenge).unwrap();
     proof_request.revealed_messages.insert(0);
@@ -274,11 +444,11 @@ fn pok_sig_bad_message() {
         Err(_) => assert!(true),
     };
 
-    let proof_request = Verifier::new_proof_request(&[0, 1, 2, 3], &pk).unwrap();
+    let proof_request = Verifier::new_proof_request(&[0, 1, 2, 3], &[], &pk).unwrap();
     let pok = Prover::commit_signature_pok(&proof_request, proof_messages.as_slice(), &signature)
         .unwrap();
 
-    let challenge = Prover::create_challenge_hash(&[pok.clone()], None, &nonce).unwrap();
+    let challenge = Prover::create_challenge_hash(&[pok.clone()], None, None, &nonce).unwrap();
 
     let mut proof = Prover::generate_signature_pok(pok, &challenge).unwrap();
     proof
@@ -308,7 +478,7 @@ fn test_challenge_hash_with_prover_claims() {
 
     //verifier requests credential
     let nonce = Verifier::generate_proof_nonce();
-    let proof_request = Verifier::new_proof_request(&[1, 3], &pk).unwrap();
+    let proof_request = Verifier::new_proof_request(&[1, 3], &[], &pk).unwrap();
 
     // Sends `proof_request` and `nonce` to the prover
     let proof_messages = vec![
@@ -330,7 +500,8 @@ fn test_challenge_hash_with_prover_claims() {
 
     // complete other zkps as desired and compute `challenge_hash`
     let challenge =
-        Prover::create_challenge_hash(&[pok.clone()], Some(claims.as_slice()), &nonce).unwrap();
+        Prover::create_challenge_hash(&[pok.clone()], None, Some(claims.as_slice()), &nonce)
+            .unwrap();
 
     let proof = Prover::generate_signature_pok(pok, &challenge).unwrap();
 
@@ -375,7 +546,7 @@ fn test_challenge_hash_with_false_prover_claims_fails() {
 
     //verifier requests credential
     let nonce = Verifier::generate_proof_nonce();
-    let proof_request = Verifier::new_proof_request(&[1, 3], &pk).unwrap();
+    let proof_request = Verifier::new_proof_request(&[1, 3], &[], &pk).unwrap();
 
     // Sends `proof_request` and `nonce` to the prover
     let proof_messages = vec![
@@ -397,7 +568,8 @@ fn test_challenge_hash_with_false_prover_claims_fails() {
 
     // complete other zkps as desired and compute `challenge_hash`
     let challenge =
-        Prover::create_challenge_hash(&[pok.clone()], Some(claims.as_slice()), &nonce).unwrap();
+        Prover::create_challenge_hash(&[pok.clone()], None, Some(claims.as_slice()), &nonce)
+            .unwrap();
 
     let proof = Prover::generate_signature_pok(pok, &challenge).unwrap();
 
@@ -442,7 +614,7 @@ fn test_challenge_hash_with_false_prover_claims() {
 
     // create nonce and proof request
     let nonce = Verifier::generate_proof_nonce();
-    let proof_request = Verifier::new_proof_request(&[1, 3], &pk).unwrap();
+    let proof_request = Verifier::new_proof_request(&[1, 3], &[], &pk).unwrap();
 
     // create proof
     let proof_messages = vec![
@@ -460,7 +632,8 @@ fn test_challenge_hash_with_false_prover_claims() {
         "self-attested claim2".as_bytes(),
     ];
     let challenge =
-        Prover::create_challenge_hash(&[pok.clone()], Some(claims.as_slice()), &nonce).unwrap();
+        Prover::create_challenge_hash(&[pok.clone()], None, Some(claims.as_slice()), &nonce)
+            .unwrap();
     let proof = Prover::generate_signature_pok(pok, &challenge).unwrap();
 
     // Create verifier challenge hash
@@ -596,10 +769,10 @@ fn bbs_demo() {
     let verifier_nonce = Verifier::generate_proof_nonce();
 
     // Verifier creates proof request for the reveal of claim1 from credential1 from Issuer1
-    let proof_request1 = Verifier::new_proof_request(&[1], &pk1).unwrap();
+    let proof_request1 = Verifier::new_proof_request(&[1], &[], &pk1).unwrap();
 
     // Verifier creates proof request for credential2 from Issuer2
-    let proof_request2 = Verifier::new_proof_request(&[], &pk2).unwrap();
+    let proof_request2 = Verifier::new_proof_request(&[], &[], &pk2).unwrap();
 
     // and additionally communicates the request for a ZK equality proof of
     // claim2 from credential1 and claim3 from credential2.
@@ -642,7 +815,7 @@ fn bbs_demo() {
 
     // Prover creates challenge hash from pok1, pok2, and nonce
     let challenge =
-        Prover::create_challenge_hash(&[pok1.clone(), pok2.clone()], None, &verifier_nonce)
+        Prover::create_challenge_hash(&[pok1.clone(), pok2.clone()], None, None, &verifier_nonce)
             .unwrap();
 
     // Prover constructs the proofs and sends them to the Verifier

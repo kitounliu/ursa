@@ -21,8 +21,10 @@ PS_Signature_G1 = []
 
 [dependencies]
 arrayref = "0.3.6"
+pairing-plus = "0.19"
+ff-zeroize = "0.6"
 bulletproofs_amcl = { version = "0.2.0", path = "./bulletproofs_amcl" }
-bbs =  { version = "0.4.0", path = "./bbs", optional = true }
+bbs =  { version = "0.4.2", path = "./bbs", optional = true }
 criterion = "0.3"
 failure = "0.1"
 lazy_static = "1.4"

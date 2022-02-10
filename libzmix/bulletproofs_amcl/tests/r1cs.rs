@@ -11,6 +11,7 @@ mod tests {
     use amcl_wrapper::group_elem_g1::{G1Vector, G1};
     use bulletproofs::utils::get_generators;
     use merlin::Transcript;
+    use serde::Serialize;
 
     #[test]
     fn test_2_factors_r1cs() {
@@ -66,6 +67,57 @@ mod tests {
         }
 
         assert!(verifier.verify(&proof, &g, &h, &big_g, &big_h).is_ok());
+    }
+
+    #[test]
+    fn test_amcl_conversion() {
+        let gg = G1::generator();
+        println!("\namcl: generator = {:?}", gg);
+        let ggb = gg.to_bytes();
+        println!("\namcl: bytes of generator = {:?}", ggb);
+
+        let bb: Vec<u8> = vec![
+            4, 16, 115, 15, 248, 200, 84, 98, 99, 25, 30, 12, 225, 124, 224, 95, 47, 45, 127, 243,
+            213, 193, 64, 97, 74, 48, 218, 26, 93, 202, 250, 193, 27, 92, 27, 124, 76, 178, 196,
+            150, 50, 84, 233, 45, 156, 80, 111, 68, 49, 9, 136, 207, 244, 94, 231, 164, 90, 207,
+            153, 26, 204, 35, 45, 124, 33, 43, 156, 234, 69, 162, 11, 148, 151, 233, 252, 1, 152,
+            243, 168, 114, 247, 103, 120, 115, 209, 121, 212, 146, 103, 174, 176, 166, 166, 30,
+            172, 244, 95,
+        ];
+        let gbb = G1::from_bytes(&bb).unwrap();
+        println!("\namcl: gbb = {:?}", gbb);
+
+        let mut g = G1::from_msg_hash("g".as_bytes());
+        let h = G1::from_msg_hash("h".as_bytes());
+        println!("\namcl: Hash(g) = {:?}", g);
+        let gb = g.to_bytes();
+        println!("\namcl: bytes of Hash(g) = {:?}, length = {}", gb, gb.len());
+        let hb = h.to_bytes();
+        println!("\namcl: bytes of Hash(h) = {:?}", hb);
+
+        let gg = G1::from_bytes(&gb).unwrap();
+        println!("\n hash(g) from bytes = {:?}", gg);
+
+        let age = FieldElement::from(25u32);
+        let age_bytes = age.to_bytes();
+        println!(
+            "\namcl: bytes of age = {:?}, length = {:?}",
+            age_bytes,
+            age_bytes.len()
+        );
+
+        let r = FieldElement::random();
+        let r_bytes = r.to_bytes();
+        println!(
+            "\namcl: random fieldelement = {:?}, length = {:?}",
+            r_bytes,
+            r_bytes.len()
+        );
+
+        let ga = g.scalar_mul_const_time(&age);
+        println!("\n amcl: g^age = {:?}", ga);
+        let gab = ga.to_bytes();
+        println!("\n amcl: bytes of g^age = {:?}", gab);
     }
 
     #[test]
